@@ -1,0 +1,254 @@
+{
+  "generated": "2026-10-15T23:54:28Z",
+  "yahoo": {
+    "QQQ": {
+      "status": "ok",
+      "path": "data_daily/yahoo/QQQ.csv",
+      "timezone": "America/New_York",
+      "dropped_columns": [
+        "Capital Gains"
+      ]
+    },
+    "SPY": {
+      "status": "ok",
+      "path": "data_daily/yahoo/SPY.csv",
+      "timezone": "America/New_York",
+      "dropped_columns": [
+        "Capital Gains"
+      ]
+    },
+    "QLD": {
+      "status": "ok",
+      "path": "data_daily/yahoo/QLD.csv",
+      "timezone": "America/New_York",
+      "dropped_columns": [
+        "Capital Gains"
+      ]
+    },
+    "TQQQ": {
+      "status": "ok",
+      "path": "data_daily/yahoo/TQQQ.csv",
+      "timezone": "America/New_York",
+      "dropped_columns": [
+        "Capital Gains"
+      ]
+    },
+    "SSO": {
+      "status": "ok",
+      "path": "data_daily/yahoo/SSO.csv",
+      "timezone": "America/New_York",
+      "dropped_columns": [
+        "Capital Gains"
+      ]
+    },
+    "UPRO": {
+      "status": "ok",
+      "path": "data_daily/yahoo/UPRO.csv",
+      "timezone": "America/New_York",
+      "dropped_columns": [
+        "Capital Gains"
+      ]
+    },
+    "GLD": {
+      "status": "ok",
+      "path": "data_daily/yahoo/GLD.csv",
+      "timezone": "America/New_York",
+      "dropped_columns": [
+        "Capital Gains"
+      ]
+    },
+    "TLT": {
+      "status": "ok",
+      "path": "data_daily/yahoo/TLT.csv",
+      "timezone": "America/New_York",
+      "dropped_columns": [
+        "Capital Gains"
+      ]
+    },
+    "IEF": {
+      "status": "ok",
+      "path": "data_daily/yahoo/IEF.csv",
+      "timezone": "America/New_York",
+      "dropped_columns": [
+        "Capital Gains"
+      ]
+    },
+    "USO": {
+      "status": "ok",
+      "path": "data_daily/yahoo/USO.csv",
+      "timezone": "America/New_York",
+      "dropped_columns": [
+        "Capital Gains"
+      ]
+    },
+    "FXE": {
+      "status": "ok",
+      "path": "data_daily/yahoo/FXE.csv",
+      "timezone": "America/New_York",
+      "dropped_columns": [
+        "Capital Gains"
+      ]
+    },
+    "^NDX": {
+      "status": "ok",
+      "path": "data_daily/yahoo/^NDX.csv",
+      "timezone": "America/New_York",
+      "dropped_columns": []
+    },
+    "^GSPC": {
+      "status": "ok",
+      "path": "data_daily/yahoo/^GSPC.csv",
+      "timezone": "America/New_York",
+      "dropped_columns": []
+    },
+    "069500.KS": {
+      "status": "ok",
+      "path": "data_daily/yahoo/069500.KS.csv",
+      "timezone": "Asia/Seoul",
+      "dropped_columns": [
+        "Capital Gains"
+      ]
+    },
+    "122630.KS": {
+      "status": "ok",
+      "path": "data_daily/yahoo/122630.KS.csv",
+      "timezone": "Asia/Seoul",
+      "dropped_columns": [
+        "Capital Gains"
+      ]
+    },
+    "133690.KS": {
+      "status": "ok",
+      "path": "data_daily/yahoo/133690.KS.csv",
+      "timezone": "Asia/Seoul",
+      "dropped_columns": [
+        "Capital Gains"
+      ]
+    },
+    "360750.KS": {
+      "status": "ok",
+      "path": "data_daily/yahoo/360750.KS.csv",
+      "timezone": "Asia/Seoul",
+      "dropped_columns": [
+        "Capital Gains"
+      ]
+    },
+    "NQ=F": {
+      "status": "ok",
+      "path": "data_daily/yahoo/NQ=F.csv",
+      "timezone": "America/New_York",
+      "dropped_columns": []
+    },
+    "ES=F": {
+      "status": "ok",
+      "path": "data_daily/yahoo/ES=F.csv",
+      "timezone": "America/New_York",
+      "dropped_columns": []
+    },
+    "GC=F": {
+      "status": "ok",
+      "path": "data_daily/yahoo/GC=F.csv",
+      "timezone": "America/New_York",
+      "dropped_columns": []
+    },
+    "CL=F": {
+      "status": "ok",
+      "path": "data_daily/yahoo/CL=F.csv",
+      "timezone": "America/New_York",
+      "dropped_columns": []
+    },
+    "ZN=F": {
+      "status": "ok",
+      "path": "data_daily/yahoo/ZN=F.csv",
+      "timezone": "America/New_York",
+      "dropped_columns": []
+    },
+    "6E=F": {
+      "status": "ok",
+      "path": "data_daily/yahoo/6E=F.csv",
+      "timezone": "America/New_York",
+      "dropped_columns": []
+    },
+    "BTC=F": {
+      "status": "ok",
+      "path": "data_daily/yahoo/BTC=F.csv",
+      "timezone": "America/New_York",
+      "dropped_columns": []
+    },
+    "KRW=X": {
+      "status": "ok",
+      "path": "data_daily/yahoo/KRW=X.csv",
+      "timezone": "Europe/London",
+      "dropped_columns": []
+    },
+    "EURUSD=X": {
+      "status": "ok",
+      "path": "data_daily/yahoo/EURUSD=X.csv",
+      "timezone": "Europe/London",
+      "dropped_columns": []
+    },
+    "JPY=X": {
+      "status": "ok",
+      "path": "data_daily/yahoo/JPY=X.csv",
+      "timezone": "Europe/London",
+      "dropped_columns": []
+    }
+  },
+  "fred": {
+    "DTB3": {
+      "status": "ok",
+      "path": "data_daily/fred/DTB3.csv"
+    },
+    "DEXKOUS": {
+      "status": "ok",
+      "path": "data_daily/fred/DEXKOUS.csv"
+    },
+    "DEXUSEU": {
+      "status": "ok",
+      "path": "data_daily/fred/DEXUSEU.csv"
+    },
+    "DEXJPUS": {
+      "status": "ok",
+      "path": "data_daily/fred/DEXJPUS.csv"
+    },
+    "FEDFUNDS": {
+      "status": "ok",
+      "path": "data_daily/fred/FEDFUNDS.csv"
+    }
+  },
+  "binance_stock_perps": {
+    "exchange_info": {
+      "url": "https://fapi.binance.com/fapi/v1/exchangeInfo",
+      "status": "failed",
+      "error": "HTTP 451"
+    },
+    "symbols": [
+      {
+        "symbol": "QQQUSDT",
+        "source": "archive listing",
+        "onboardDate": null,
+        "archive_months": [
+          "2026-04",
+          "2026-05",
+          "2026-06",
+          "2026-07",
+          "2026-08",
+          "2026-09"
+        ]
+      },
+      {
+        "symbol": "SPYUSDT",
+        "source": "archive listing",
+        "onboardDate": null,
+        "archive_months": [
+          "2026-04",
+          "2026-05",
+          "2026-06",
+          "2026-07",
+          "2026-08",
+          "2026-09"
+        ]
+      }
+    ]
+  }
+}

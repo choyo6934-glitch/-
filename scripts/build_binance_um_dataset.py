@@ -275,12 +275,14 @@ def build_klines(symbol: str, months: list[str], raw_dir: Path, interval: str,
             w.writerow([iso(o), r[1], r[2], r[3], r[4], r[5], iso(c), r[7], r[8], r[9], r[10]])
 
     aligned = [o for o, _, _ in kept if (o - start) % step == 0]
-    gaps = find_gaps(aligned, start, end, step)
+    # Count slots from the first bar on: the time before a listing is not a gap.
+    grid_start = aligned[0] if aligned else start
+    gaps = find_gaps(aligned, grid_start, end, step)
     # Placeholder bars (e.g. during exchange maintenance): slot present but no trades.
     no_trade = [iso(o) for o, _, r in kept if int(r[8]) == 0]
     return {
         "symbol": symbol, "kind": "klines", "path": out_path, "files": files,
-        "raw_rows": len(rows), "rows": len(kept), "expected": (end - start) // step,
+        "raw_rows": len(rows), "rows": len(kept), "expected": (end - grid_start) // step,
         "dup_exact": dup_exact, "dup_conflict": dup_conflict, "conflicts": conflicts,
         "out_of_range": out_of_range, "misaligned": misaligned, "bad_close": bad_close,
         "no_trade": no_trade,
@@ -310,7 +312,7 @@ def build_funding(symbol: str, months: list[str], raw_dir: Path, out_path: Path)
         files.append({"month": month, "present": True, "header": has_header,
                       "units": sorted(units), "rows": len(body)})
 
-    rows.sort(key=lambda x: x[0])
+    rows.sort(key=lambda x: x[1])
     kept, seen = [], {}
     dup_exact = dup_conflict = out_of_range = 0
     conflicts = []
@@ -318,14 +320,15 @@ def build_funding(symbol: str, months: list[str], raw_dir: Path, out_path: Path)
         if not start <= nominal < end:
             out_of_range += 1
             continue
-        if nominal in seen:
-            if seen[nominal][0] == hours and Decimal(seen[nominal][1]) == Decimal(rate):
+        # Key on the exact calc_time: two distinct settlements can round to the same hour.
+        if t in seen:
+            if seen[t] == (hours, Decimal(rate)):
                 dup_exact += 1
             else:
                 dup_conflict += 1
-                conflicts.append(iso(nominal))
+                conflicts.append(iso(t))
             continue
-        seen[nominal] = (hours, rate)
+        seen[t] = (hours, Decimal(rate))
         kept.append((nominal, t, hours, rate))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -336,17 +339,19 @@ def build_funding(symbol: str, months: list[str], raw_dir: Path, out_path: Path)
             w.writerow([iso(nominal), iso(t), hours, rate])
 
     # Missing events: walk consecutive settlements using the reported interval.
-    gaps, irregular = [], []
+    gaps, irregular, shared, changes = [], [], [], []
     if kept:
-        first_n, _, first_h, _ = kept[0]
-        lead = (first_n - start) // (first_h * US_PER_HOUR)
-        if lead:
-            gaps.append((start, first_n - first_h * US_PER_HOUR, lead))
         for (pn, _, ph, _), (cn, _, ch, _) in zip(kept, kept[1:]):
             delta = cn - pn
-            if delta in (ph * US_PER_HOUR, ch * US_PER_HOUR):
+            if delta == 0:  # two records settle in the same hour; both kept
+                shared.append(iso(cn))
+                continue
+            if ph != ch:  # interval switch; the transition period is not a gap
+                changes.append((iso(pn), iso(cn), ph, ch))
                 continue
             step = ch * US_PER_HOUR
+            if delta == step:
+                continue
             if delta > step and delta % step == 0:
                 gaps.append((pn + step, cn - step, delta // step - 1))
             else:
@@ -363,7 +368,8 @@ def build_funding(symbol: str, months: list[str], raw_dir: Path, out_path: Path)
         "raw_rows": len(rows), "rows": len(kept),
         "dup_exact": dup_exact, "dup_conflict": dup_conflict, "conflicts": conflicts,
         "out_of_range": out_of_range, "missing": sum(g[2] for g in gaps), "gaps": gaps,
-        "irregular": irregular, "intervals": sorted({h for _, _, h, _ in kept}),
+        "irregular": irregular, "shared": shared, "changes": changes,
+        "intervals": sorted({h for _, _, h, _ in kept}),
         "max_offset_ms": max(offsets_ms, default=0),
         "nonzero_offsets": sum(1 for x in offsets_ms if x),
         "first": iso(kept[0][0]) if kept else None, "last": iso(kept[-1][0]) if kept else None,
@@ -384,7 +390,11 @@ def write_readme(path: Path, args, months: list[str], dl: dict, stats: list[dict
     n_ok = sum(1 for r in dl.values() if r["status"] == "ok")
     n_missing = sum(1 for r in dl.values() if r["status"] == "missing")
     n_verified = sum(1 for r in dl.values() if r["checksum"] == "verified")
-    missing_files = sorted(f"{k}/{s}/{m}" for (k, s, m), r in dl.items() if r["status"] == "missing")
+    missing_by_series = {}
+    for (k, s, m), r in sorted(dl.items()):
+        if r["status"] == "missing":
+            missing_by_series.setdefault(f"{s} {k}", []).append(m)
+    missing_files = [f"{name}: {compress_months(ms)}" for name, ms in missing_by_series.items()]
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     L = []
@@ -428,7 +438,7 @@ def write_readme(path: Path, args, months: list[str], dl: dict, stats: list[dict
           "ms 미만 자릿수가 있으면 잘리지 않도록 스크립트가 오류로 중단한다.",
           "- **숫자 값**: 원본 문자열을 그대로 기록했다 (부동소수점 재포맷 없음). "
           "따라서 같은 열에서도 `7225`와 `7225.00`처럼 소수 자릿수 표기가 다를 수 있다.",
-          "- **중복 제거**: 같은 `open_time`(펀딩은 `funding_time`)이 여러 번 나오면 먼저 나온 행(이른 월 파일)을 남긴다. "
+          "- **중복 제거**: 같은 `open_time`(펀딩은 `calc_time`)이 여러 번 나오면 먼저 나온 행(이른 월 파일)을 남긴다. "
           "값이 숫자로 같으면 '동일 중복', 다르면 '충돌 중복'으로 집계한다.",
           "- **범위 밖 행**: 요청 기간 밖의 행은 제외하고 개수만 집계한다.",
           "- 각 zip은 같은 경로의 `.CHECKSUM`(SHA256)과 대조해 검증했다.", ""]
@@ -452,7 +462,8 @@ def write_readme(path: Path, args, months: list[str], dl: dict, stats: list[dict
           f"- 존재: {n_ok}개, 아카이브에 없음(404): {n_missing}개",
           f"- SHA256 검증 통과: {n_verified}/{n_ok}"]
     if missing_files:
-        L.append(f"- 없는 파일: {', '.join(missing_files)}")
+        L.append("- 없는 파일 (상장 전 월이면 정상):")
+        L += [f"  - {x}" for x in missing_files]
     L.append("")
 
     L += ["## 품질 점검", "", "### 캔들 (klines)", "",
@@ -463,7 +474,7 @@ def write_readme(path: Path, args, months: list[str], dl: dict, stats: list[dict
                  f"{s['out_of_range']} | {s['misaligned']} | {s['bad_close']} | {s['rows']:,} | "
                  f"{s['expected']:,} | {s['missing']} | {len(s['no_trade'])} |")
     L.append("")
-    L.append(f"기대 봉 수 = {months[0]}-01T00:00Z부터 {months[-1]} 말일 23:00Z까지의 {args.interval} 슬롯 수. "
+    L.append(f"기대 봉 수 = 첫 봉(기간 시작 또는 상장 시점)부터 {months[-1]} 말일 23:00Z까지의 {args.interval} 슬롯 수. "
              "'체결 0건 봉'은 행은 있지만 `count = 0`인 봉으로, 시가=고가=저가=종가=직전 종가이고 "
              "거래량이 0인 자리채움 봉이다 (거래소 점검 시간 등). 누락으로 세지 않고 그대로 두었다.")
     L.append("")
@@ -478,24 +489,31 @@ def write_readme(path: Path, args, months: list[str], dl: dict, stats: list[dict
         L.append("")
 
     L += ["### 펀딩비 (fundingRate)", "",
-          "| 심볼 | 원본 행 | 동일 중복 | 충돌 중복 | 범위 밖 | 최종 행 | 펀딩 주기(h) | 누락 회차 | 불규칙 간격 | calc_time 지터 최대 |",
-          "|---|---:|---:|---:|---:|---:|---|---:|---:|---:|"]
+          "| 심볼 | 원본 행 | 동일 중복 | 충돌 중복 | 범위 밖 | 최종 행 | 펀딩 주기(h) | 주기 변경 | 같은 정시 2건 | 누락 회차 | 불규칙 간격 | calc_time 지터 최대 |",
+          "|---|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|"]
     for s in (x for x in stats if x["kind"] == "funding"):
         L.append(f"| {s['symbol']} | {s['raw_rows']:,} | {s['dup_exact']} | {s['dup_conflict']} | "
                  f"{s['out_of_range']} | {s['rows']:,} | {', '.join(map(str, s['intervals']))} | "
+                 f"{len(s['changes'])} | {len(s['shared'])} | "
                  f"{s['missing']} | {len(s['irregular'])} | {s['max_offset_ms']:.0f} ms |")
     L.append("")
-    L.append("누락 회차는 연속한 정산 시각의 간격을 `funding_interval_hours`와 비교해 계산했다 "
-             "(기간 시작·끝의 빈 회차 포함). 지터는 `calc_time`과 `funding_time`(정시) 사이의 차이다.")
+    L.append("중복은 정확히 같은 `calc_time` 기준이다. `calc_time`이 다른 두 기록이 같은 정시(`funding_time`)로 "
+             "반올림되면 둘 다 남기고 '같은 정시 2건'으로 센다. "
+             "누락 회차는 같은 주기가 이어지는 구간에서 정산 시각 간격을 `funding_interval_hours`와 비교해 계산했다 "
+             "(첫 회차 이전은 제외, 기간 끝의 빈 회차는 포함, 주기가 바뀌는 구간은 '주기 변경'으로 따로 표시). "
+             "지터는 `calc_time`과 `funding_time`(정시) 사이의 차이다.")
     L.append("")
     for s in (x for x in stats if x["kind"] == "funding"):
         L.append(f"**{s['symbol']} 펀딩 누락/불규칙** "
-                 f"(누락 {s['missing']}회, 불규칙 {len(s['irregular'])}건, "
+                 f"(누락 {s['missing']}회, 불규칙 {len(s['irregular'])}건, 주기 변경 {len(s['changes'])}건, "
                  f"지터가 0이 아닌 행 {s['nonzero_offsets']:,}개)")
         L.append("")
         L += [f"- 누락 {fmt_gap(g, '회')}" for g in s["gaps"]]
         L += [f"- 불규칙 `{a}` → `{b}` ({h:g}시간 간격)" for a, b, h in s["irregular"]]
-        if not s["gaps"] and not s["irregular"]:
+        L += [f"- 주기 변경 `{a}` ({p}h) → `{b}` ({c}h)" for a, b, p, c in s["changes"]]
+        if s["shared"]:
+            L.append(f"- 같은 정시 2건: {', '.join(f'`{t}`' for t in s['shared'])}")
+        if not (s["gaps"] or s["irregular"] or s["changes"] or s["shared"]):
             L.append("- 없음")
         if s["conflicts"]:
             L.append(f"- 충돌 중복 시각: {', '.join(s['conflicts'])}")
