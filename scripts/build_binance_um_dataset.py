@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Build per-symbol CSVs from Binance USDⓈ-M futures monthly archives.
+"""Build per-symbol CSVs from Binance monthly archives (USDⓈ-M futures or spot).
 
-Downloads the public monthly zip files (klines + fundingRate) from
-data.binance.vision, verifies each against its published SHA256 CHECKSUM,
-normalises column names and timestamps, removes duplicates, checks for
-missing bars / funding events and writes a README describing the result.
+Downloads the public monthly zip files from data.binance.vision (futures:
+klines + fundingRate, spot: klines), verifies each against its published
+SHA256 CHECKSUM, normalises column names and timestamps, removes duplicates,
+checks for missing bars / funding events and writes a README describing the
+result, including each symbol's first/last archived month and every file that
+could not be downloaded.
 
 Only static public archive files are fetched; no Binance REST/WebSocket API
 (and nothing that needs authentication or places orders) is called.
@@ -13,6 +15,8 @@ Usage:
     python3 scripts/build_binance_um_dataset.py \
         --symbols BTCUSDT ETHUSDT --start 2020-01 --end 2026-09 \
         --raw-dir .cache/binance_um --out-dir data
+    python3 scripts/build_binance_um_dataset.py --market spot \
+        --symbols BTCUSDT --out-dir data_spot
 """
 from __future__ import annotations
 
@@ -30,7 +34,11 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
-BASE_URL = "https://data.binance.vision/data/futures/um/monthly"
+BASE_URLS = {
+    "um": "https://data.binance.vision/data/futures/um/monthly",
+    "spot": "https://data.binance.vision/data/spot/monthly",
+}
+MARKET_TITLES = {"um": "USDⓈ-M 선물", "spot": "현물"}
 
 KLINE_COLS = [
     "open_time", "open", "high", "low", "close", "volume", "close_time",
@@ -92,9 +100,15 @@ def to_us(raw: str) -> tuple[int, str]:
     raise ValueError(f"unrecognised timestamp magnitude: {raw!r}")
 
 
-def iso(us: int) -> str:
-    """UTC ISO-8601 with millisecond precision, e.g. 2020-01-01T00:59:59.999Z."""
-    if us % US_PER_MS:
+def iso(us: int, floor_ms: bool = False) -> str:
+    """UTC ISO-8601 with millisecond precision, e.g. 2020-01-01T00:59:59.999Z.
+
+    Sub-millisecond digits raise unless floor_ms is set (used for µs close_time
+    values such as ...59.999999, which become ...59.999 like the ms archives).
+    """
+    if floor_ms:
+        us -= us % US_PER_MS
+    elif us % US_PER_MS:
         raise ValueError(f"sub-millisecond timestamp would be truncated: {us}")
     dt = EPOCH + timedelta(microseconds=us)
     return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
@@ -135,14 +149,18 @@ def http_get(url: str, retries: int = 4, timeout: int = 60) -> bytes | None:
     return None
 
 
-def archive_url(kind: str, symbol: str, month: str, interval: str) -> str:
+def archive_url(market: str, kind: str, symbol: str, month: str, interval: str) -> str:
+    base = BASE_URLS[market]
     if kind == "klines":
-        return f"{BASE_URL}/klines/{symbol}/{interval}/{symbol}-{interval}-{month}.zip"
-    return f"{BASE_URL}/fundingRate/{symbol}/{symbol}-fundingRate-{month}.zip"
+        return f"{base}/klines/{symbol}/{interval}/{symbol}-{interval}-{month}.zip"
+    return f"{base}/fundingRate/{symbol}/{symbol}-fundingRate-{month}.zip"
 
 
-def archive_path(raw_dir: Path, kind: str, symbol: str, month: str, interval: str) -> Path:
-    return raw_dir / kind / symbol / Path(archive_url(kind, symbol, month, interval)).name
+def archive_path(raw_dir: Path, market: str, kind: str, symbol: str, month: str,
+                 interval: str) -> Path:
+    # Spot and futures kline zips share file names, so spot gets its own subtree.
+    root = raw_dir / "spot" if market == "spot" else raw_dir
+    return root / kind / symbol / Path(archive_url(market, kind, symbol, month, interval)).name
 
 
 def download_one(url: str, dest: Path) -> dict:
@@ -164,12 +182,20 @@ def download_one(url: str, dest: Path) -> dict:
     raise RuntimeError(f"SHA256 mismatch after retry: {url}")
 
 
-def download_all(jobs: list[tuple[str, str, str]], raw_dir: Path, interval: str,
+def download_all(jobs: list[tuple[str, str, str]], raw_dir: Path, market: str, interval: str,
                  workers: int) -> dict:
     def run(job):
         kind, symbol, month = job
-        url = archive_url(kind, symbol, month, interval)
-        return job, download_one(url, archive_path(raw_dir, kind, symbol, month, interval))
+        url = archive_url(market, kind, symbol, month, interval)
+        dest = archive_path(raw_dir, market, kind, symbol, month, interval)
+        try:
+            res = download_one(url, dest)
+        except Exception as e:  # recorded as a failure; never retried another way
+            reason = f"HTTP {e.code} {e.reason}".strip() if isinstance(e, urllib.error.HTTPError) \
+                else f"{type(e).__name__}: {e}"
+            res = {"status": "failed", "checksum": None, "cached": False, "error": reason}
+        res["url"] = url
+        return job, res
 
     results = {}
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -219,16 +245,36 @@ def same_values(a: list[str], b: list[str]) -> bool:
     return all(Decimal(x) == Decimal(y) for x, y in zip(a, b))
 
 
+def coverage(dl: dict, kind: str, symbol: str, months: list[str]) -> dict:
+    """Months present in the archive, the 404 months before/after them and the failures."""
+    status = {m: dl[(kind, symbol, m)] for m in months}
+    present = [m for m in months if status[m]["status"] == "ok"]
+    first, last = (present[0], present[-1]) if present else (None, None)
+    before = [m for m in months if first is None or m < first]
+    after = [m for m in months if last is not None and m > last]
+    failures = []
+    for m in months:
+        r = status[m]
+        if r["status"] == "failed":
+            failures.append((r["url"], r["error"]))
+        elif r["status"] == "missing" and first is not None and first < m < last:
+            failures.append((r["url"], "HTTP 404 (아카이브에 없음, 수록 기간 중간)"))
+    return {"present": present, "first": first, "last": last,
+            "skipped_before": [m for m in before if status[m]["status"] == "missing"],
+            "skipped_after": [m for m in after if status[m]["status"] == "missing"],
+            "cut": last is not None and last < months[-1], "failures": failures}
+
+
 # ---------------------------------------------------------------- builders
 
-def build_klines(symbol: str, months: list[str], raw_dir: Path, interval: str,
-                 out_path: Path) -> dict:
+def build_klines(symbol: str, months: list[str], raw_dir: Path, market: str, interval: str,
+                 out_path: Path, cov: dict) -> dict:
     step = INTERVAL_US[interval]
     start, end = month_start_us(months[0]), month_start_us(next_month(months[-1]))
     files, rows = [], []
     for month in months:
-        path = archive_path(raw_dir, "klines", symbol, month, interval)
-        if not path.exists():
+        path = archive_path(raw_dir, market, "klines", symbol, month, interval)
+        if month not in cov["present"]:  # only checksum-verified downloads are read
             files.append({"month": month, "present": False})
             continue
         has_header, body = split_header(read_zip_rows(path), KLINE_COLS, path.name)
@@ -245,7 +291,7 @@ def build_klines(symbol: str, months: list[str], raw_dir: Path, interval: str,
 
     rows.sort(key=lambda x: x[0])  # stable: earlier month file wins on duplicates
     kept, seen = [], {}
-    dup_exact = dup_conflict = out_of_range = misaligned = bad_close = 0
+    dup_exact = dup_conflict = out_of_range = misaligned = bad_close = floored = 0
     conflicts = []
     for o, c, r in rows:
         if not start <= o < end:
@@ -265,6 +311,7 @@ def build_klines(symbol: str, months: list[str], raw_dir: Path, interval: str,
             misaligned += 1
         if not (o < c < o + step):
             bad_close += 1
+        floored += c % US_PER_MS != 0
         kept.append((o, c, r))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -272,31 +319,35 @@ def build_klines(symbol: str, months: list[str], raw_dir: Path, interval: str,
         w = csv.writer(fh, lineterminator="\n")
         w.writerow(KLINE_OUT_COLS)
         for o, c, r in kept:
-            w.writerow([iso(o), r[1], r[2], r[3], r[4], r[5], iso(c), r[7], r[8], r[9], r[10]])
+            w.writerow([iso(o), r[1], r[2], r[3], r[4], r[5], iso(c, floor_ms=True),
+                        r[7], r[8], r[9], r[10]])
 
     aligned = [o for o, _, _ in kept if (o - start) % step == 0]
-    # Count slots from the first bar on: the time before a listing is not a gap.
+    # Count slots from the first bar on: the time before a listing is not a gap. When the
+    # archive stops early (delisting, rename), the series ends at its last bar.
     grid_start = aligned[0] if aligned else start
-    gaps = find_gaps(aligned, grid_start, end, step)
+    grid_end = aligned[-1] + step if aligned and cov["cut"] else end
+    gaps = find_gaps(aligned, grid_start, grid_end, step)
     # Placeholder bars (e.g. during exchange maintenance): slot present but no trades.
     no_trade = [iso(o) for o, _, r in kept if int(r[8]) == 0]
     return {
-        "symbol": symbol, "kind": "klines", "path": out_path, "files": files,
-        "raw_rows": len(rows), "rows": len(kept), "expected": (end - grid_start) // step,
+        "symbol": symbol, "kind": "klines", "path": out_path, "files": files, "cov": cov,
+        "raw_rows": len(rows), "rows": len(kept), "expected": (grid_end - grid_start) // step,
         "dup_exact": dup_exact, "dup_conflict": dup_conflict, "conflicts": conflicts,
         "out_of_range": out_of_range, "misaligned": misaligned, "bad_close": bad_close,
-        "no_trade": no_trade,
+        "floored_close": floored, "no_trade": no_trade,
         "missing": sum(g[2] for g in gaps), "gaps": gaps,
         "first": iso(kept[0][0]) if kept else None, "last": iso(kept[-1][0]) if kept else None,
     }
 
 
-def build_funding(symbol: str, months: list[str], raw_dir: Path, out_path: Path) -> dict:
+def build_funding(symbol: str, months: list[str], raw_dir: Path, out_path: Path,
+                  cov: dict) -> dict:
     start, end = month_start_us(months[0]), month_start_us(next_month(months[-1]))
     files, rows = [], []
     for month in months:
-        path = archive_path(raw_dir, "fundingRate", symbol, month, "")
-        if not path.exists():
+        path = archive_path(raw_dir, "um", "fundingRate", symbol, month, "")
+        if month not in cov["present"]:  # only checksum-verified downloads are read
             files.append({"month": month, "present": False})
             continue
         has_header, body = split_header(read_zip_rows(path), FUNDING_COLS, path.name)
@@ -359,12 +410,12 @@ def build_funding(symbol: str, months: list[str], raw_dir: Path, out_path: Path)
         last_n, _, last_h, _ = kept[-1]
         step = last_h * US_PER_HOUR
         trail = -(-(end - last_n) // step) - 1
-        if trail > 0:
+        if trail > 0 and not cov["cut"]:  # a series cut by delisting has no trailing gap
             gaps.append((last_n + step, last_n + trail * step, trail))
 
     offsets_ms = [abs(t - n) / US_PER_MS for n, t, _, _ in kept]
     return {
-        "symbol": symbol, "kind": "funding", "path": out_path, "files": files,
+        "symbol": symbol, "kind": "funding", "path": out_path, "files": files, "cov": cov,
         "raw_rows": len(rows), "rows": len(kept),
         "dup_exact": dup_exact, "dup_conflict": dup_conflict, "conflicts": conflicts,
         "out_of_range": out_of_range, "missing": sum(g[2] for g in gaps), "gaps": gaps,
@@ -387,25 +438,25 @@ def fmt_gap(g: tuple[int, int, int], step_label: str) -> str:
 
 def write_readme(path: Path, args, months: list[str], dl: dict, stats: list[dict]) -> None:
     rel = lambda p: p.relative_to(path.parent).as_posix()
+    um = args.market == "um"
     n_ok = sum(1 for r in dl.values() if r["status"] == "ok")
     n_missing = sum(1 for r in dl.values() if r["status"] == "missing")
+    n_failed = sum(1 for r in dl.values() if r["status"] == "failed")
     n_verified = sum(1 for r in dl.values() if r["checksum"] == "verified")
-    missing_by_series = {}
-    for (k, s, m), r in sorted(dl.items()):
-        if r["status"] == "missing":
-            missing_by_series.setdefault(f"{s} {k}", []).append(m)
-    missing_files = [f"{name}: {compress_months(ms)}" for name, ms in missing_by_series.items()]
+    unverified = [r["url"] for r in dl.values() if r["status"] == "ok" and r["checksum"] != "verified"]
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    kinds = "캔들 · 펀딩비" if um else "캔들"
 
     L = []
-    L += [f"# Binance USDⓈ-M 선물 {args.interval} 캔들 · 펀딩비 데이터", ""]
-    L += [f"- 출처: <{BASE_URL}/> (공개 정적 아카이브 zip. 인증·주문 API는 호출하지 않음)",
+    L += [f"# Binance {MARKET_TITLES[args.market]} {args.interval} {kinds} 데이터", ""]
+    L += [f"- 출처: <{BASE_URLS[args.market]}/> (공개 정적 아카이브 zip. 인증·주문 API는 호출하지 않음)",
           f"- 심볼: {', '.join(args.symbols)}",
-          f"- 기간: {months[0]} ~ {months[-1]} (UTC, 월별 파일 {len(months)}개/심볼/종류)",
+          f"- 요청 기간: {months[0]} ~ {months[-1]} (UTC, 월별 파일 {len(months)}개/심볼/종류). "
+          "심볼별 실제 수록 기간은 아래 '심볼별 수록 기간' 참고",
           f"- 생성 시각: {generated}",
           "- 재생성: `python3 scripts/build_binance_um_dataset.py "
-          f"--symbols {' '.join(args.symbols)} --start {args.start} --end {args.end} "
-          f"--interval {args.interval} --out-dir data`", ""]
+          f"--market {args.market} --symbols {' '.join(args.symbols)} --start {args.start} "
+          f"--end {args.end} --interval {args.interval} --out-dir {args.out_dir.as_posix()}`", ""]
 
     L += ["## 파일", "", "| 파일 | 행 수 | 첫 시각 (UTC) | 마지막 시각 (UTC) |", "|---|---:|---|---|"]
     for s in stats:
@@ -422,20 +473,23 @@ def write_readme(path: Path, args, months: list[str], dl: dict, stats: list[dict
           "| `count` | 체결 건수 |",
           "| `taker_buy_volume` | 테이커 매수 거래량 (기초자산) |",
           "| `taker_buy_quote_volume` | 테이커 매수 거래대금 (USDT) |", "",
-          "원본의 `ignore` 열(항상 0)은 제거했다.", "",
-          "### `{symbol}_funding.csv` (fundingRate)", "",
-          "| 열 | 설명 |", "|---|---|",
-          "| `funding_time` | 펀딩 정산 시각. `calc_time`을 가장 가까운 정시로 반올림한 값 (UTC ISO-8601) |",
-          "| `calc_time` | 원본 계산 시각 그대로 (UTC ISO-8601, ms) |",
-          "| `funding_interval_hours` | 펀딩 주기 (시간) |",
-          "| `last_funding_rate` | 해당 회차 펀딩비 (소수, 0.0001 = 0.01%) |", ""]
+          "원본의 `ignore` 열(항상 0)은 제거했다.", ""]
+    if um:
+        L += ["### `{symbol}_funding.csv` (fundingRate)", "",
+              "| 열 | 설명 |", "|---|---|",
+              "| `funding_time` | 펀딩 정산 시각. `calc_time`을 가장 가까운 정시로 반올림한 값 (UTC ISO-8601) |",
+              "| `calc_time` | 원본 계산 시각 그대로 (UTC ISO-8601, ms) |",
+              "| `funding_interval_hours` | 펀딩 주기 (시간) |",
+              "| `last_funding_rate` | 해당 회차 펀딩비 (소수, 0.0001 = 0.01%) |", ""]
 
     L += ["## 변환 규칙", "",
           "- **열 이름 통일**: 헤더가 있는 파일은 헤더를 정규 열 이름과 대조해 검증하고, "
           "헤더가 없는 파일은 열 개수를 검증한 뒤 같은 정규 열 이름을 붙였다.",
           "- **타임스탬프 단위**: 값의 자릿수로 판별한다 (`>= 10^15` → µs, `>= 10^12` → ms). "
           "모든 값을 µs로 맞춘 뒤 UTC ISO-8601 문자열(`YYYY-MM-DDTHH:MM:SS.sssZ`)로 변환했다. "
-          "ms 미만 자릿수가 있으면 잘리지 않도록 스크립트가 오류로 중단한다.",
+          "µs 파일의 `close_time`(`…59.999999`)은 ms로 내림해 ms 파일과 같은 `…59.999`로 기록했다 "
+          f"(내림한 값 {sum(s.get('floored_close', 0) for s in stats):,}개). "
+          "그 밖의 시각에 ms 미만 자릿수가 있으면 잘리지 않도록 스크립트가 오류로 중단한다.",
           "- **숫자 값**: 원본 문자열을 그대로 기록했다 (부동소수점 재포맷 없음). "
           "따라서 같은 열에서도 `7225`와 `7225.00`처럼 소수 자릿수 표기가 다를 수 있다.",
           "- **중복 제거**: 같은 `open_time`(펀딩은 `calc_time`)이 여러 번 나오면 먼저 나온 행(이른 월 파일)을 남긴다. "
@@ -457,13 +511,33 @@ def write_readme(path: Path, args, months: list[str], dl: dict, stats: list[dict
                  f"{compress_months(hdr)} | {unit_txt} |")
     L.append("")
 
+    n_kinds = 2 if um else 1
     L += ["## 다운로드 결과", "",
-          f"- 요청 zip: {len(dl)}개 (심볼 {len(args.symbols)} × 종류 2 × {len(months)}개월)",
-          f"- 존재: {n_ok}개, 아카이브에 없음(404): {n_missing}개",
+          f"- 요청 zip: {len(dl)}개 (심볼 {len(args.symbols)} × 종류 {n_kinds} × {len(months)}개월)",
+          f"- 받음: {n_ok}개, 아카이브에 없음(404): {n_missing}개, 실패(404 외 오류): {n_failed}개",
           f"- SHA256 검증 통과: {n_verified}/{n_ok}"]
-    if missing_files:
-        L.append("- 없는 파일 (상장 전 월이면 정상):")
-        L += [f"  - {x}" for x in missing_files]
+    L += [f"- 체크섬 파일이 없어 검증하지 못한 zip: `{u}`" for u in unverified]
+    L.append("")
+
+    L += ["## 심볼별 수록 기간", "",
+          "'상장 전 건너뜀'은 첫 달 이전의 404 달, '마지막 달 이후 없음'은 마지막 달 이후의 404 달이다. "
+          f"마지막 달이 요청 끝({months[-1]})보다 이르면 아카이브가 그 달에서 끊긴 것이다 "
+          "(상장 폐지·이름 변경 등). 이런 심볼은 마지막 봉까지만 누락을 센다.", "",
+          "| 심볼 | 종류 | 첫 달 | 마지막 달 | 받은 달 수 | 상장 전 건너뜀 | 마지막 달 이후 없음 |",
+          "|---|---|---|---|---:|---|---|"]
+    for s in stats:
+        c = s["cov"]
+        last = c["last"] or "-"
+        if c["cut"]:
+            last = f"**{last}** (끊김)"
+        L.append(f"| {s['symbol']} | {s['kind']} | {c['first'] or '-'} | {last} | {len(c['present'])} | "
+                 f"{compress_months(c['skipped_before'])} | {compress_months(c['skipped_after'])} |")
+    L.append("")
+
+    failures = [(s["symbol"], s["kind"], url, reason) for s in stats for url, reason in s["cov"]["failures"]]
+    L += ["## 실패 목록", "",
+          "받지 못한 파일 (상장 전·마지막 달 이후의 404는 위 표에 따로 적었다). 다른 경로로 우회하지 않았다.", ""]
+    L += [f"- {sym} {kind}: <{url}> — {reason}" for sym, kind, url, reason in failures] or ["- 없음"]
     L.append("")
 
     L += ["## 품질 점검", "", "### 캔들 (klines)", "",
@@ -474,7 +548,8 @@ def write_readme(path: Path, args, months: list[str], dl: dict, stats: list[dict
                  f"{s['out_of_range']} | {s['misaligned']} | {s['bad_close']} | {s['rows']:,} | "
                  f"{s['expected']:,} | {s['missing']} | {len(s['no_trade'])} |")
     L.append("")
-    L.append(f"기대 봉 수 = 첫 봉(기간 시작 또는 상장 시점)부터 {months[-1]} 말일 23:00Z까지의 {args.interval} 슬롯 수. "
+    L.append(f"기대 봉 수 = 첫 봉(기간 시작 또는 상장 시점)부터 {months[-1]} 말일 23:00Z"
+             f"(아카이브가 끊긴 심볼은 마지막 봉)까지의 {args.interval} 슬롯 수. "
              "'체결 0건 봉'은 행은 있지만 `count = 0`인 봉으로, 시가=고가=저가=종가=직전 종가이고 "
              "거래량이 0인 자리채움 봉이다 (거래소 점검 시간 등). 누락으로 세지 않고 그대로 두었다.")
     L.append("")
@@ -488,6 +563,10 @@ def write_readme(path: Path, args, months: list[str], dl: dict, stats: list[dict
             L.append(f"- 충돌 중복 시각: {', '.join(s['conflicts'])}")
         L.append("")
 
+    if not um:
+        path.write_text("\n".join(L))
+        return
+
     L += ["### 펀딩비 (fundingRate)", "",
           "| 심볼 | 원본 행 | 동일 중복 | 충돌 중복 | 범위 밖 | 최종 행 | 펀딩 주기(h) | 주기 변경 | 같은 정시 2건 | 누락 회차 | 불규칙 간격 | calc_time 지터 최대 |",
           "|---|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|"]
@@ -500,7 +579,8 @@ def write_readme(path: Path, args, months: list[str], dl: dict, stats: list[dict
     L.append("중복은 정확히 같은 `calc_time` 기준이다. `calc_time`이 다른 두 기록이 같은 정시(`funding_time`)로 "
              "반올림되면 둘 다 남기고 '같은 정시 2건'으로 센다. "
              "누락 회차는 같은 주기가 이어지는 구간에서 정산 시각 간격을 `funding_interval_hours`와 비교해 계산했다 "
-             "(첫 회차 이전은 제외, 기간 끝의 빈 회차는 포함, 주기가 바뀌는 구간은 '주기 변경'으로 따로 표시). "
+             "(첫 회차 이전은 제외, 기간 끝의 빈 회차는 아카이브가 끊기지 않은 심볼만 포함, "
+             "주기가 바뀌는 구간은 '주기 변경'으로 따로 표시). "
              "지터는 `calc_time`과 `funding_time`(정시) 사이의 차이다.")
     L.append("")
     for s in (x for x in stats if x["kind"] == "funding"):
@@ -526,6 +606,8 @@ def write_readme(path: Path, args, months: list[str], dl: dict, stats: list[dict
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--market", default="um", choices=sorted(BASE_URLS),
+                    help="um = USDⓈ-M futures (klines + fundingRate), spot = spot klines only")
     ap.add_argument("--symbols", nargs="+", default=["BTCUSDT", "ETHUSDT"])
     ap.add_argument("--start", default="2020-01", help="first month, YYYY-MM")
     ap.add_argument("--end", default="2026-09", help="last month, YYYY-MM")
@@ -537,21 +619,27 @@ def main() -> int:
     args = ap.parse_args()
 
     months = month_range(args.start, args.end)
-    jobs = [(kind, sym, m) for sym in args.symbols for kind in ("klines", "fundingRate") for m in months]
+    kinds = ("klines", "fundingRate") if args.market == "um" else ("klines",)
+    jobs = [(kind, sym, m) for sym in args.symbols for kind in kinds for m in months]
     print(f"downloading {len(jobs)} archives into {args.raw_dir}", file=sys.stderr)
-    dl = download_all(jobs, args.raw_dir, args.interval, args.workers)
+    dl = download_all(jobs, args.raw_dir, args.market, args.interval, args.workers)
 
     stats = []
     for sym in args.symbols:
-        stats.append(build_klines(sym, months, args.raw_dir, args.interval,
-                                  args.out_dir / f"{sym}_{args.interval}.csv"))
-        stats.append(build_funding(sym, months, args.raw_dir, args.out_dir / f"{sym}_funding.csv"))
+        stats.append(build_klines(sym, months, args.raw_dir, args.market, args.interval,
+                                  args.out_dir / f"{sym}_{args.interval}.csv",
+                                  coverage(dl, "klines", sym, months)))
+        if args.market == "um":
+            stats.append(build_funding(sym, months, args.raw_dir, args.out_dir / f"{sym}_funding.csv",
+                                       coverage(dl, "fundingRate", sym, months)))
     write_readme(args.out_dir / "README.md", args, months, dl, stats)
 
     for s in stats:
-        print(f"{s['path']}: rows={s['rows']} dup_exact={s['dup_exact']} "
-              f"dup_conflict={s['dup_conflict']} out_of_range={s['out_of_range']} "
-              f"missing={s['missing']} gaps={len(s['gaps'])}", file=sys.stderr)
+        c = s["cov"]
+        print(f"{s['path']}: rows={s['rows']} months={c['first']}..{c['last']}{' CUT' if c['cut'] else ''} "
+              f"dup_exact={s['dup_exact']} dup_conflict={s['dup_conflict']} "
+              f"missing={s['missing']} gaps={len(s['gaps'])} failures={len(c['failures'])}",
+              file=sys.stderr)
     return 0
 
 
