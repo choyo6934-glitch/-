@@ -66,6 +66,8 @@ US_PER_HOUR = 3_600_000_000
 EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 INTERVAL_US = {"1m": 60_000_000, "5m": 300_000_000, "15m": 900_000_000,
                "1h": US_PER_HOUR, "4h": 4 * US_PER_HOUR, "1d": 24 * US_PER_HOUR}
+# A trailing run of zero-trade bars at least this long marks a contract that stopped trading.
+DEAD_TAIL_US = 24 * US_PER_HOUR
 
 
 # ---------------------------------------------------------------- helpers
@@ -291,7 +293,7 @@ def build_klines(symbol: str, months: list[str], raw_dir: Path, market: str, int
 
     rows.sort(key=lambda x: x[0])  # stable: earlier month file wins on duplicates
     kept, seen = [], {}
-    dup_exact = dup_conflict = out_of_range = misaligned = bad_close = floored = 0
+    dup_exact = dup_conflict = out_of_range = misaligned = bad_close = floored = nonstd_close = 0
     conflicts = []
     for o, c, r in rows:
         if not start <= o < end:
@@ -311,8 +313,20 @@ def build_klines(symbol: str, months: list[str], raw_dir: Path, market: str, int
             misaligned += 1
         if not (o < c < o + step):
             bad_close += 1
+        # Standard close is open + interval - 1ms (ms files) or - 1µs (µs files).
+        nonstd_close += c not in (o + step - US_PER_MS, o + step - 1)
         floored += c % US_PER_MS != 0
         kept.append((o, c, r))
+
+    # After a contract stops trading the archive can keep publishing placeholder bars
+    # (count = 0, frozen price) for months; drop such a trailing run.
+    tail = 0
+    while tail < len(kept) and int(kept[-1 - tail][2][8]) == 0:
+        tail += 1
+    dead_tail = None
+    if tail and tail * step >= DEAD_TAIL_US:
+        dead_tail = (kept[-tail][0], kept[-1][0], tail)
+        kept = kept[:-tail]
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", newline="") as fh:
@@ -325,24 +339,28 @@ def build_klines(symbol: str, months: list[str], raw_dir: Path, market: str, int
     aligned = [o for o, _, _ in kept if (o - start) % step == 0]
     # Count slots from the first bar on: the time before a listing is not a gap. When the
     # archive stops early (delisting, rename), the series ends at its last bar.
+    ended = bool(aligned) and (cov["cut"] or dead_tail is not None)
     grid_start = aligned[0] if aligned else start
-    grid_end = aligned[-1] + step if aligned and cov["cut"] else end
+    grid_end = aligned[-1] + step if ended else end
     gaps = find_gaps(aligned, grid_start, grid_end, step)
     # Placeholder bars (e.g. during exchange maintenance): slot present but no trades.
     no_trade = [iso(o) for o, _, r in kept if int(r[8]) == 0]
     return {
         "symbol": symbol, "kind": "klines", "path": out_path, "files": files, "cov": cov,
+        "dead_tail": dead_tail, "end_us": grid_end if ended else None,
         "raw_rows": len(rows), "rows": len(kept), "expected": (grid_end - grid_start) // step,
         "dup_exact": dup_exact, "dup_conflict": dup_conflict, "conflicts": conflicts,
         "out_of_range": out_of_range, "misaligned": misaligned, "bad_close": bad_close,
-        "floored_close": floored, "no_trade": no_trade,
+        "floored_close": floored, "nonstd_close": nonstd_close, "no_trade": no_trade,
         "missing": sum(g[2] for g in gaps), "gaps": gaps,
         "first": iso(kept[0][0]) if kept else None, "last": iso(kept[-1][0]) if kept else None,
     }
 
 
 def build_funding(symbol: str, months: list[str], raw_dir: Path, out_path: Path,
-                  cov: dict) -> dict:
+                  cov: dict, stop_us: int | None = None) -> dict:
+    """stop_us: end of the symbol's last real candle when trading stopped early; funding
+    records after it are archive placeholders (typically a constant 0.0001) and are dropped."""
     start, end = month_start_us(months[0]), month_start_us(next_month(months[-1]))
     files, rows = [], []
     for month in months:
@@ -382,6 +400,14 @@ def build_funding(symbol: str, months: list[str], raw_dir: Path, out_path: Path,
         seen[t] = (hours, Decimal(rate))
         kept.append((nominal, t, hours, rate))
 
+    dead_tail = None
+    if stop_us is not None:
+        after = [r for r in kept if r[0] > stop_us]
+        if after:
+            dead_tail = (after[0][0], after[-1][0], len(after))
+            kept = [r for r in kept if r[0] <= stop_us]
+    ended = cov["cut"] or stop_us is not None
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", newline="") as fh:
         w = csv.writer(fh, lineterminator="\n")
@@ -410,12 +436,13 @@ def build_funding(symbol: str, months: list[str], raw_dir: Path, out_path: Path,
         last_n, _, last_h, _ = kept[-1]
         step = last_h * US_PER_HOUR
         trail = -(-(end - last_n) // step) - 1
-        if trail > 0 and not cov["cut"]:  # a series cut by delisting has no trailing gap
+        if trail > 0 and not ended:  # a series that stopped early has no trailing gap
             gaps.append((last_n + step, last_n + trail * step, trail))
 
     offsets_ms = [abs(t - n) / US_PER_MS for n, t, _, _ in kept]
     return {
         "symbol": symbol, "kind": "funding", "path": out_path, "files": files, "cov": cov,
+        "dead_tail": dead_tail,
         "raw_rows": len(rows), "rows": len(kept),
         "dup_exact": dup_exact, "dup_conflict": dup_conflict, "conflicts": conflicts,
         "out_of_range": out_of_range, "missing": sum(g[2] for g in gaps), "gaps": gaps,
@@ -520,18 +547,34 @@ def write_readme(path: Path, args, months: list[str], dl: dict, stats: list[dict
     L.append("")
 
     L += ["## 심볼별 수록 기간", "",
-          "'상장 전 건너뜀'은 첫 달 이전의 404 달, '마지막 달 이후 없음'은 마지막 달 이후의 404 달이다. "
-          f"마지막 달이 요청 끝({months[-1]})보다 이르면 아카이브가 그 달에서 끊긴 것이다 "
-          "(상장 폐지·이름 변경 등). 이런 심볼은 마지막 봉까지만 누락을 센다.", "",
-          "| 심볼 | 종류 | 첫 달 | 마지막 달 | 받은 달 수 | 상장 전 건너뜀 | 마지막 달 이후 없음 |",
-          "|---|---|---|---|---:|---|---|"]
+          "'아카이브 마지막 달'은 zip이 있는 마지막 달이고, 요청 끝"
+          f"({months[-1]})보다 이르면 아카이브가 그 달에서 끊긴 것이다 (상장 폐지·이름 변경 등). "
+          "'데이터 마지막 시각'은 CSV의 마지막 행이다. 거래가 끝난 뒤의 자리채움 기록을 뺀 심볼은 "
+          "아카이브 마지막 달보다 이를 수 있다 (아래 '거래 종료 후 자리채움 기록 제외'). "
+          "'상장 전 건너뜀'은 첫 달 이전의 404 달, '마지막 달 이후 없음'은 아카이브 마지막 달 이후의 404 달이다. "
+          "데이터가 일찍 끝난 심볼은 마지막 봉까지만 누락을 센다.", "",
+          "| 심볼 | 종류 | 첫 달 | 아카이브 마지막 달 | 데이터 마지막 시각 | 받은 달 수 | 상장 전 건너뜀 | 마지막 달 이후 없음 |",
+          "|---|---|---|---|---|---:|---|---|"]
     for s in stats:
         c = s["cov"]
         last = c["last"] or "-"
         if c["cut"]:
             last = f"**{last}** (끊김)"
-        L.append(f"| {s['symbol']} | {s['kind']} | {c['first'] or '-'} | {last} | {len(c['present'])} | "
-                 f"{compress_months(c['skipped_before'])} | {compress_months(c['skipped_after'])} |")
+        data_last = s["last"] or "-"
+        if s.get("dead_tail"):
+            data_last = f"**{data_last}**"
+        L.append(f"| {s['symbol']} | {s['kind']} | {c['first'] or '-'} | {last} | {data_last} | "
+                 f"{len(c['present'])} | {compress_months(c['skipped_before'])} | "
+                 f"{compress_months(c['skipped_after'])} |")
+    L.append("")
+
+    dead = [s for s in stats if s.get("dead_tail")]
+    L += ["## 거래 종료 후 자리채움 기록 제외", "",
+          "아카이브는 거래가 끝난 계약에도 자리채움 기록을 계속 내보내는 경우가 있다 "
+          "(체결 0건·가격 고정 봉, 0.0001 고정 펀딩비). 캔들 끝에서 체결 0건 봉이 24시간 이상 이어지면 그 구간을 뺐고, "
+          "펀딩비는 같은 심볼 캔들의 마지막 봉 종료 시각 이후 기록을 뺐다.", ""]
+    L += [f"- {s['symbol']} {s['kind']}: `{iso(s['dead_tail'][0])}` ~ `{iso(s['dead_tail'][1])}` "
+          f"{s['dead_tail'][2]:,}행 제외" for s in dead] or ["- 없음"]
     L.append("")
 
     failures = [(s["symbol"], s["kind"], url, reason) for s in stats for url, reason in s["cov"]["failures"]]
@@ -541,12 +584,16 @@ def write_readme(path: Path, args, months: list[str], dl: dict, stats: list[dict
     L.append("")
 
     L += ["## 품질 점검", "", "### 캔들 (klines)", "",
-          "| 심볼 | 원본 행 | 동일 중복 | 충돌 중복 | 범위 밖 | 정시 아님 | close_time 이상 | 최종 행 | 기대 봉 수 | 누락 봉 | 체결 0건 봉 |",
-          "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+          "| 심볼 | 원본 행 | 동일 중복 | 충돌 중복 | 범위 밖 | 정시 아님 | close_time 이상 | close_time 비표준 | 최종 행 | 기대 봉 수 | 누락 봉 | 체결 0건 봉 |",
+          "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
     for s in (x for x in stats if x["kind"] == "klines"):
         L.append(f"| {s['symbol']} | {s['raw_rows']:,} | {s['dup_exact']} | {s['dup_conflict']} | "
-                 f"{s['out_of_range']} | {s['misaligned']} | {s['bad_close']} | {s['rows']:,} | "
-                 f"{s['expected']:,} | {s['missing']} | {len(s['no_trade'])} |")
+                 f"{s['out_of_range']} | {s['misaligned']} | {s['bad_close']} | {s['nonstd_close']} | "
+                 f"{s['rows']:,} | {s['expected']:,} | {s['missing']} | {len(s['no_trade'])} |")
+    L.append("")
+    L.append("'close_time 이상'은 `close_time`이 봉 구간 밖(`open_time` 이하이거나 다음 봉 이후)인 봉, "
+             "'close_time 비표준'은 `open_time + 1h - 1ms`(µs 파일은 `- 1µs`)가 아닌 봉이다 "
+             "(거래소 점검으로 봉이 일찍 끝난 경우 등). 둘 다 원본 값을 그대로 두었다.")
     L.append("")
     L.append(f"기대 봉 수 = 첫 봉(기간 시작 또는 상장 시점)부터 {months[-1]} 말일 23:00Z"
              f"(아카이브가 끊긴 심볼은 마지막 봉)까지의 {args.interval} 슬롯 수. "
@@ -626,12 +673,12 @@ def main() -> int:
 
     stats = []
     for sym in args.symbols:
-        stats.append(build_klines(sym, months, args.raw_dir, args.market, args.interval,
-                                  args.out_dir / f"{sym}_{args.interval}.csv",
-                                  coverage(dl, "klines", sym, months)))
+        k = build_klines(sym, months, args.raw_dir, args.market, args.interval,
+                         args.out_dir / f"{sym}_{args.interval}.csv", coverage(dl, "klines", sym, months))
+        stats.append(k)
         if args.market == "um":
             stats.append(build_funding(sym, months, args.raw_dir, args.out_dir / f"{sym}_funding.csv",
-                                       coverage(dl, "fundingRate", sym, months)))
+                                       coverage(dl, "fundingRate", sym, months), stop_us=k["end_us"]))
     write_readme(args.out_dir / "README.md", args, months, dl, stats)
 
     for s in stats:
