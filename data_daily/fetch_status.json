@@ -1,5 +1,5 @@
 {
-  "generated": "2026-10-15T23:54:28Z",
+  "generated": "2026-10-18T15:52:59Z",
   "yahoo": {
     "QQQ": {
       "status": "ok",
@@ -192,6 +192,24 @@
       "path": "data_daily/yahoo/JPY=X.csv",
       "timezone": "Europe/London",
       "dropped_columns": []
+    },
+    "^IXIC": {
+      "status": "ok",
+      "path": "data_daily/yahoo/^IXIC.csv",
+      "timezone": "America/New_York",
+      "dropped_columns": []
+    },
+    "^N225": {
+      "status": "ok",
+      "path": "data_daily/yahoo/^N225.csv",
+      "timezone": "Asia/Tokyo",
+      "dropped_columns": []
+    },
+    "^VIX": {
+      "status": "ok",
+      "path": "data_daily/yahoo/^VIX.csv",
+      "timezone": "America/Chicago",
+      "dropped_columns": []
     }
   },
   "fred": {
@@ -214,6 +232,42 @@
     "FEDFUNDS": {
       "status": "ok",
       "path": "data_daily/fred/FEDFUNDS.csv"
+    },
+    "TB3MS": {
+      "status": "ok",
+      "path": "data_daily/fred/TB3MS.csv"
+    },
+    "M1329AUSM193NNBR": {
+      "status": "ok",
+      "path": "data_daily/fred/M1329AUSM193NNBR.csv"
+    },
+    "GS10": {
+      "status": "ok",
+      "path": "data_daily/fred/GS10.csv"
+    },
+    "DGS10": {
+      "status": "ok",
+      "path": "data_daily/fred/DGS10.csv"
+    },
+    "CPIAUCNS": {
+      "status": "ok",
+      "path": "data_daily/fred/CPIAUCNS.csv"
+    },
+    "BAA": {
+      "status": "ok",
+      "path": "data_daily/fred/BAA.csv"
+    },
+    "AAA": {
+      "status": "ok",
+      "path": "data_daily/fred/AAA.csv"
+    },
+    "IRSTCI01JPM156N": {
+      "status": "ok",
+      "path": "data_daily/fred/IRSTCI01JPM156N.csv"
+    },
+    "INTDSRJPM193N": {
+      "status": "ok",
+      "path": "data_daily/fred/INTDSRJPM193N.csv"
     }
   },
   "binance_stock_perps": {

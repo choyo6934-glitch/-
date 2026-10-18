@@ -24,14 +24,24 @@ from pathlib import Path
 YAHOO_TICKERS = (
     "QQQ SPY QLD TQQQ SSO UPRO GLD TLT IEF USO FXE ^NDX ^GSPC "
     "069500.KS 122630.KS 133690.KS 360750.KS NQ=F ES=F GC=F CL=F ZN=F 6E=F BTC=F "
-    "KRW=X EURUSD=X JPY=X"
+    "KRW=X EURUSD=X JPY=X "
+    # 시작 시점 연구용 추가: 나스닥 종합(1971~), 닛케이225(1965~), VIX(1990~)
+    "^IXIC ^N225 ^VIX"
 ).split()
 YAHOO_COLS = {
     "Open": "open", "High": "high", "Low": "low", "Close": "close",
     "Adj Close": "adj_close", "Volume": "volume",
     "Dividends": "dividends", "Stock Splits": "stock_splits",
 }
-FRED_IDS = ["DTB3", "DEXKOUS", "DEXUSEU", "DEXJPUS", "FEDFUNDS"]
+FRED_IDS = ["DTB3", "DEXKOUS", "DEXUSEU", "DEXJPUS", "FEDFUNDS",
+            # 시작 시점 연구용 추가
+            "TB3MS",              # 미국 3개월 국채 월평균 1934-01~ (1954년 이전 금리)
+            "M1329AUSM193NNBR",   # NBER 미국 단기 국채 수익률 1920-01~1934-03 (1934년 이전 금리)
+            "GS10", "DGS10",      # 미국 10년 국채(월 1953~, 일 1962~): 장단기 금리차
+            "CPIAUCNS",           # 미국 소비자물가 1913~: 실질 기준 민감도
+            "BAA", "AAA",         # 무디스 회사채 수익률 1919~: 신용 스프레드
+            "IRSTCI01JPM156N",    # 일본 콜금리 1985-07~ (닛케이 3배 합성 금리)
+            "INTDSRJPM193N"]      # 일본 공정할인율 1953~2017 (1985년 이전 일본 금리)
 FRED_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={}"
 
 EXCHANGE_INFO_URL = "https://fapi.binance.com/fapi/v1/exchangeInfo"

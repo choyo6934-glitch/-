@@ -1,0 +1,15 @@
+{
+  "generated": "2026-10-18T15:53:57Z",
+  "source": "http://www.econ.yale.edu/~shiller/data/ie_data.xls",
+  "status": "ok",
+  "rows": 1833,
+  "first": "1871-01-01",
+  "last_non_empty": {
+    "price": "2023-09-01",
+    "dividend": "2023-06-01",
+    "earnings": "2023-06-01",
+    "cpi": "2023-09-01",
+    "gs10": "2023-09-01",
+    "cape": "2023-09-01"
+  }
+}
