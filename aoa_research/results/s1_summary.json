@@ -1,0 +1,31 @@
+{
+ "n_exec_rows": 1444583,
+ "n_trade_rows": 1439207,
+ "n_funding_rows": 5368,
+ "n_settlement_rows": 8,
+ "n_orders_excl_zero_uuid": 23416,
+ "deposits_btc": 14.48925714,
+ "withdrawals_btc": -2814.54321713,
+ "wallet_realised_total_btc": 3537.32369404,
+ "recon_bitmex_realised_total_btc": 3537.34133892,
+ "recon_cash_total_btc": 2968.12188334,
+ "recon_diff_total_btc": 0.01764488,
+ "max_abs_symbol_diff_btc": 0.01764488,
+ "wallet_final_balance_btc": 737.26973405,
+ "wallet_last_snapshot_btc": 737.26973405,
+ "wallet_symbols_without_fills": [],
+ "n_positions_all": 3185,
+ "n_positions_kept_2pct": 2738,
+ "n_positions_open_at_end": 1,
+ "open_at_end": [
+  {
+   "symbol": "XBTUSD",
+   "dir": "-1",
+   "t_open": "2021-12-24 03:28:15.683307+00:00",
+   "max_abs_qty": "29080100.0"
+  }
+ ],
+ "end_qty_by_symbol": {
+  "XBTUSD": -29080100.0
+ }
+}
