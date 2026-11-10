@@ -1,0 +1,6 @@
+# 원자료(공개자 요청에 따라 재배포하지 않음)와 중간 캐시
+raw/
+cache/
+*.parquet
+*.pkl
+__pycache__/
