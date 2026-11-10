@@ -1,4 +1,12 @@
 {
+ "daily_reconciliation": {
+  "n_symbol_days": 2172,
+  "n_exact": 1527,
+  "n_within_1000sat": 2088,
+  "max_abs_diff_btc": 0.041967557744104864,
+  "sum_abs_diff_btc": 0.15089419995388517,
+  "unbooked_after_ledger_end_btc": 0.01958048
+ },
  "n_exec_rows": 1444583,
  "n_trade_rows": 1439207,
  "n_funding_rows": 5368,

@@ -49,6 +49,7 @@ def reconstruct(df: pd.DataFrame):
     pos_id_open_of_row = np.full(n, -1, dtype=np.int64)  # 분할 체결의 새 포지션
     qty_after = np.zeros(n)
     realized_row = np.zeros(n)   # 행별 BitMEX식 실현액(매매 실현 + 수수료 + 펀딩), 사토시
+    cost_after = np.zeros(n)     # 행 처리 후 열린 수량의 원가(execcost 합), 사토시
 
     positions = []
     sym_summary = {}
@@ -78,6 +79,7 @@ def reconstruct(df: pd.DataFrame):
                 cur["n_funding"] += 1
                 pos_id_of_row[i] = cur["pos_id"]
             qty_after[i] = qty
+            cost_after[i] = avg_cost
             continue
         # Trade / Settlement
         sgn = 1.0 if side[i] == "Buy" else -1.0
@@ -89,6 +91,7 @@ def reconstruct(df: pd.DataFrame):
         realized_row[i] = fee
         if q == 0:
             qty_after[i] = qty
+            cost_after[i] = avg_cost
             continue
         xbt_per_ct = abs(c) / q_abs[i] / SAT if q_abs[i] > 0 else np.nan
         is_maker = liq[i] == "AddedLiquidity"
@@ -125,6 +128,7 @@ def reconstruct(df: pd.DataFrame):
             cur["n_settle"] += int(e == "Settlement")
             pos_id_of_row[i] = cur["pos_id"]
             qty_after[i] = qty
+            cost_after[i] = avg_cost
             continue
         # 감소(또는 방향 전환)
         close_q = min(abs(q), abs(qty))
@@ -175,6 +179,7 @@ def reconstruct(df: pd.DataFrame):
             avg_cost = c2
             pos_id_open_of_row[i] = cur["pos_id"]
         qty_after[i] = qty
+        cost_after[i] = avg_cost
     sym_summary[cur_sym] = (qty, avg_cost, realized, fees, funding, cash)
 
     pos = pd.DataFrame(positions)
@@ -202,6 +207,7 @@ def reconstruct(df: pd.DataFrame):
     df["pos_id_open"] = pos_id_open_of_row
     df["qty_after"] = qty_after
     df["realized_sat"] = realized_row
+    df["cost_after"] = cost_after
     return df, pos, ss
 
 
@@ -295,7 +301,8 @@ def main():
     with open(RESULTS / "s1_summary.json", "w") as f:
         json.dump(summary, f, indent=1, ensure_ascii=False, default=str)
     pos.to_parquet(CACHE / "positions.parquet", index=False)
-    df[["row_order", "symbol", "t", "exectype", "pos_id", "pos_id_open", "qty_after"]].to_parquet(
+    df[["row_order", "symbol", "t", "exectype", "pos_id", "pos_id_open", "qty_after", "cost_after",
+        "realized_sat"]].to_parquet(
         CACHE / "exec_posmap.parquet", index=False)
     return df, pos, ss, summary
 
