@@ -15,10 +15,11 @@ import time
 
 from gradio_client import Client, handle_file
 
-SPACE = os.environ.get("SPACE", "Upsampler/wan-2-2-5b-video")
+SPACE = os.environ.get("SPACE", "https://upsampler-wan-2-2-5b-video.hf.space")
 OUT_DIR = os.environ.get("OUT_DIR", "/workspace/clips")
 OUT = os.environ.get("OUT", "/workspace/output_20s.mp4")
-W, H = int(os.environ.get("WIDTH", 1280)), int(os.environ.get("HEIGHT", 704))
+# the Space caps width/height at 1024: generate 16:9 at 1024x576, upscale+crop to 1280x704
+W, H = int(os.environ.get("WIDTH", 1024)), int(os.environ.get("HEIGHT", 576))
 STEPS = int(os.environ.get("STEPS", 4))
 SEED = int(os.environ.get("SEED", 42))
 PROMPT = (
@@ -40,7 +41,10 @@ def main():
     start = int(sys.argv[1]) if len(sys.argv) > 1 else 1
     os.makedirs(OUT_DIR, exist_ok=True)
     times_path = os.path.join(os.path.dirname(OUT), "clip_times.csv")
-    client = Client(SPACE, token=os.environ.get("HF_TOKEN"))
+    # A token lifts the ZeroGPU quota; gradio sends it to the Space as x-hf-authorization.
+    # SPACE may be a direct https://<sub>.hf.space URL so no huggingface.co call is made.
+    tok = os.environ.get("HF_TOKEN")
+    client = Client(SPACE, headers={"x-hf-authorization": f"Bearer {tok}"} if tok else None)
 
     for i in range(start, 5):
         clip = os.path.join(OUT_DIR, f"clip{i}.mp4")
@@ -70,7 +74,7 @@ def main():
             n = os.path.join(OUT_DIR, f"n{i}.mp4")
             pre = "" if i == 1 else "select='gte(n\\,1)',setpts=N/(24*TB),"
             ff("-i", os.path.join(OUT_DIR, f"clip{i}.mp4"),
-               "-vf", f"{pre}fps=24,scale=1280:704:flags=lanczos,format=yuv420p",
+               "-vf", f"{pre}fps=24,scale=1280:704:force_original_aspect_ratio=increase:flags=lanczos,crop=1280:704,format=yuv420p",
                "-an", "-c:v", "libx264", "-crf", "16", "-preset", "slow", n)
             f.write(f"file '{n}'\n")
     ff("-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", "-movflags", "+faststart", OUT)
